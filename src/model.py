@@ -39,15 +39,15 @@ def head_apply_fn(params, x):
     out = wei @ v                       # B x T x H
     return out
 
-def init_head_fn(rng, n_embed, n_heads, scale=1e-2):
-    head_size = n_embed // n_heads
+def init_head_fn(rng, embed_dim, n_heads, scale):
+    head_size = embed_dim // n_heads
     rng, key_key, key_value, key_query = jax.random.split(rng, 4)
     params = {} 
     for i in range(n_heads):
         params[f'head_{i}'] = {
-            'key':   jax.random.normal(key_key,   shape=(n_embed, head_size)) * scale,
-            'value': jax.random.normal(key_value, shape=(n_embed, head_size)) * scale,
-            'query': jax.random.normal(key_query, shape=(n_embed, head_size)) * scale,
+            'key':   jax.random.normal(key_key,   shape=(embed_dim, head_size)) * scale,
+            'value': jax.random.normal(key_value, shape=(embed_dim, head_size)) * scale,
+            'query': jax.random.normal(key_query, shape=(embed_dim, head_size)) * scale,
             }
     return params
 
@@ -56,18 +56,18 @@ def ffwd_fn(params, x):
     out = out @ params['dense2'] + params['bias2']
     return out
 
-def init_ffwd_fn(rng, n_embed, scale=1e-2):
+def init_ffwd_fn(rng, embed_dim, scale=1e-2):
     rng, key1, key2 = jax.random.split(rng, 3)
     params = {
-        'dense1': jax.random.normal(key1, shape=(n_embed, 4 * n_embed)) * scale,
-        'bias1': jax.random.normal(key1, shape=(4 * n_embed,)) * scale,
-        'dense2': jax.random.normal(key2, shape=(4 * n_embed, n_embed)) * scale,
-        'bias2': jax.random.normal(key2, shape=(n_embed,)) * scale,
+        'dense1': jax.random.normal(key1, shape=(embed_dim, 4 * embed_dim)) * scale,
+        'bias1': jax.random.normal(key1, shape=(4 * embed_dim,)) * scale,
+        'dense2': jax.random.normal(key2, shape=(4 * embed_dim, embed_dim)) * scale,
+        'bias2': jax.random.normal(key2, shape=(embed_dim,)) * scale,
         }
     return params
 
 
-def layer_norm_fn(params, x, eps=1e-5):
+def layer_norm_fn(params, x, eps=1e-6):
     gamma, beta = params['gamma'], params['beta']
     mean = jnp.mean(x, axis=-1, keepdims=True)
     std = jnp.std(x, axis=-1, keepdims=True)
@@ -75,22 +75,22 @@ def layer_norm_fn(params, x, eps=1e-5):
     out = out * gamma + beta
     return out
 
-def init_layer_norm_fn(n_embed):
+def init_layer_norm_fn(embed_dim):
     params = {
-        'gamma': jnp.ones((n_embed,)),
-        'beta': jnp.zeros((n_embed,)),
+        'gamma': jnp.ones((embed_dim,)),
+        'beta': jnp.zeros((embed_dim,)),
         }
     return params
 
 
-def init_block_fn(rng, n_embed, n_heads, scale=1e-2):
-    rng, key1, key2, key3, key4, key5 = jax.random.split(rng, 6)
+def init_block_fn(rng, embed_dim, n_heads, scale):
+    rng, key1, key2, key3 = jax.random.split(rng, 4)
     params = {
-        'head': init_head_fn(key1, n_embed, n_heads, scale),
-        'ffwd': init_ffwd_fn(key2, n_embed, scale),
-        'proj': jax.random.normal(key3, shape=(n_embed, n_embed)) * scale,
-        'ln1': init_layer_norm_fn(n_embed),
-        'ln2': init_layer_norm_fn(n_embed),
+        'head': init_head_fn(key1, embed_dim, n_heads, scale),
+        'ffwd': init_ffwd_fn(key2, embed_dim, scale),
+        'proj': jax.random.normal(key3, shape=(embed_dim, embed_dim)) * scale,
+        'ln1': init_layer_norm_fn(embed_dim),
+        'ln2': init_layer_norm_fn(embed_dim),
         }
     return params
 
@@ -102,6 +102,7 @@ def block_fn(params, x):
     return x
 
 
+@jit
 def apply_fn(params, xb):
     B, T = xb.shape
     tok_embs = params['tok_embedding'][xb]              # B x T x C
@@ -110,20 +111,19 @@ def apply_fn(params, xb):
     for block in params['blocks']:
         x = block_fn(block, x)
     x = layer_norm_fn(params['layer_norm'], x)
-    logits = x @ params['lm_head']                 # B x T x V
+    logits = x @ params['lm_head']                       # B x T x V
     return logits
 
 
-def init_fn(rng, n_embed, n_heads, vocab_size, block_size, n_layers, scale=1e-2):
-    rng, key1, key2, key3, key4, key5 = jax.random.split(rng, 6)
+def init_fn(rng, config):
+    rng, key1, key2, key3 = jax.random.split(rng, 4)
     params = {
-        'tok_embedding': jax.random.normal(key1, shape=(vocab_size, n_embed)) * scale,
-        'pos_embedding': jax.random.normal(key2, shape=(block_size, n_embed)) * scale,
-        'lm_head': jax.random.normal(key3, shape=(n_embed, vocab_size)) * scale,
-        'blocks': [init_block_fn(key1, n_embed, n_heads, scale=scale) for _ in range(n_layers)],
-        'layer_norm': init_layer_norm_fn(n_embed),
+        'tok_embedding': jax.random.normal(key1, shape=(config['vocab_size'], config['embed_dim'])) * config['scale'],
+        'pos_embedding': jax.random.normal(key2, shape=(config['block_size'], config['embed_dim'])) * config['scale'],
+        'lm_head': jax.random.normal(key3, shape=(config['embed_dim'], config['vocab_size'])) * config['scale'],
+        'blocks': [init_block_fn(key1, config['embed_dim'], config['n_heads'], scale=config['scale']) for _ in range(config['n_layers'])],
+        'layer_norm': init_layer_norm_fn(config['embed_dim']),
         }
-
     return params
 
 
